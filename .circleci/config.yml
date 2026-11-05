@@ -1,0 +1,65 @@
+version: 2.1
+
+jobs:
+    test:
+        parameters:
+            version:
+                type: string
+            stability:
+                type: string
+        docker:
+            -   image: cimg/php:<<parameters.version>>
+        resource_class: small
+        steps:
+            - checkout
+            -   restore_cache:
+                    keys:
+                        - v1-composer-<<parameters.version>>-<<parameters.stability>>-{{ checksum "composer.json" }}
+                        - v1-composer-<<parameters.version>>-<<parameters.stability>>-
+            -   run:
+                    name: install
+                    command: composer update --<<parameters.stability>> --prefer-dist --no-interaction
+            -   save_cache:
+                    key: v1-composer-<<parameters.version>>-<<parameters.stability>>-{{ checksum "composer.json" }}
+                    paths:
+                        - ~/.cache/composer
+            -   run:
+                    name: test
+                    command: composer test
+
+    # Same intent as street-orb/spectre-orb's composer_audit, adapted for a
+    # library: there's no committed composer.lock, so resolve the tree first.
+    # COMPOSER_NO_SECURITY_BLOCKING stops Composer 2.9+ silently skipping
+    # vulnerable versions during update, so the audit sees what the composer.json
+    # constraints actually allow.
+    composer-audit:
+        docker:
+            -   image: cimg/php:8.5
+        resource_class: small
+        environment:
+            COMPOSER_NO_SECURITY_BLOCKING: "1"
+        steps:
+            - checkout
+            # Report-only: shows advisories reachable at the lowest versions our
+            # runtime constraints allow. Mostly transitive, so it never fails the build.
+            -   run:
+                    name: composer audit (prefer-lowest, report only)
+                    command: |
+                        composer update --prefer-lowest --no-dev --prefer-dist --no-interaction --no-audit --no-scripts
+                        composer audit --no-dev --abandoned=report || echo "WARNING: advisories reachable at lowest constraints (report only)"
+            # Gate: what a consumer gets on a fresh install today.
+            -   run:
+                    name: composer audit
+                    command: |
+                        composer update --prefer-stable --prefer-dist --no-interaction --no-audit --no-scripts
+                        composer audit --abandoned=report
+
+workflows:
+    build:
+        jobs:
+            -   test:
+                    matrix:
+                        parameters:
+                            version: [ "8.2", "8.3", "8.4", "8.5" ]
+                            stability: [ "prefer-lowest", "prefer-stable" ]
+            - composer-audit
